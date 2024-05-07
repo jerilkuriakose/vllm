@@ -23,7 +23,6 @@ def hf_tokenizer_to_sentencepiece(tokenizer_name):
     tokenizer = spm.SentencePieceProcessor(model_file=new_tokenizer_name)
     with open(tokenizer_config) as f:
         d = json.load(f)
-        print(d)
     d['tokenizer_class'] = d['tokenizer_class'].replace('Allam', '')
     with tempfile.TemporaryDirectory() as tmpdirname:
         for filename in os.listdir(tokenizer_name):
