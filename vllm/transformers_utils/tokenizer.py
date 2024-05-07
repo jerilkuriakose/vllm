@@ -1,17 +1,54 @@
 import os
+import json
+import tempfile
+import shutil
 from typing import Optional, Union
 
-import huggingface_hub
+import sentencepiece as spm
 from transformers import (AutoTokenizer, PreTrainedTokenizer,
                           PreTrainedTokenizerFast)
 
-from vllm.envs import VLLM_USE_MODELSCOPE
+from vllm.config import VLLM_USE_MODELSCOPE
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.transformers_utils.tokenizers import BaichuanTokenizer
 from vllm.utils import make_async
 
 logger = init_logger(__name__)
+
+
+def hf_tokenizer_to_sentencepiece(tokenizer_name):
+    new_tokenizer_name = tokenizer_name + "/tokenizer.model"
+    tokenizer_config = tokenizer_name + "/tokenizer_config.json"
+    tokenizer = spm.SentencePieceProcessor(model_file=new_tokenizer_name)
+    with open(tokenizer_config) as f:
+        d = json.load(f)
+        print(d)
+    d['tokenizer_class'] = d['tokenizer_class'].replace('Allam', '')
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        for filename in os.listdir(tokenizer_name):
+            if not filename.startswith("model"):
+                source_file = os.path.join(tokenizer_name, filename)
+                destination_file = os.path.join(tmpdirname, filename)
+                shutil.copy(source_file, destination_file)
+
+        temp_fpath = tmpdirname + "/tokenizer_config.json"                
+        with open(temp_fpath, 'w') as f:
+            json.dump(d, f)
+
+        tokenizer_hf = AutoTokenizer.from_pretrained(tmpdirname)
+        
+    tokenizer.__dict__.update({
+        "all_special_ids": tokenizer_hf.all_special_ids,
+        "all_special_tokens_extended": tokenizer_hf.all_special_tokens_extended,
+        "all_special_tokens": tokenizer_hf.all_special_tokens,
+        "eos_token_id": tokenizer_hf.eos_token_id,
+        "is_fast": tokenizer_hf.is_fast,
+        "convert_ids_to_tokens": tokenizer_hf.convert_ids_to_tokens,
+        "get_added_vocab": tokenizer_hf.get_added_vocab,
+        "convert_tokens_to_string": tokenizer_hf.convert_tokens_to_string
+    })
+    return tokenizer
 
 
 def get_cached_tokenizer(
@@ -59,12 +96,11 @@ def get_tokenizer(
     *args,
     tokenizer_mode: str = "auto",
     trust_remote_code: bool = False,
-    revision: Optional[str] = None,
+    tokenizer_revision: Optional[str] = None,
     download_dir: Optional[str] = None,
     **kwargs,
 ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
-    """Gets a tokenizer for the given model name via HuggingFace or ModelScope.
-    """
+    """Gets a tokenizer for the given model name via Huggingface/modelscope."""
     if VLLM_USE_MODELSCOPE:
         # download model from ModelScope hub,
         # lazy import so that modelscope is not required for normal use.
@@ -76,10 +112,9 @@ def get_tokenizer(
             tokenizer_path = snapshot_download(
                 model_id=tokenizer_name,
                 cache_dir=download_dir,
-                revision=revision,
-                local_files_only=huggingface_hub.constants.HF_HUB_OFFLINE,
+                revision=tokenizer_revision,
                 # Ignore weights - we only need the tokenizer.
-                ignore_file_pattern=[".*.pt", ".*.safetensors", ".*.bin"])
+                ignore_file_pattern=["*.pt", "*.safetensors", "*.bin"])
             tokenizer_name = tokenizer_path
 
     if tokenizer_mode == "slow":
@@ -93,12 +128,16 @@ def get_tokenizer(
             tokenizer_name,
             *args,
             trust_remote_code=trust_remote_code,
-            revision=revision,
+            tokenizer_revision=tokenizer_revision,
             **kwargs)
     except ValueError as e:
+        print(str(e))
+        if "LlamaTokenizerAllam" in str(e):
+            tokenizer = hf_tokenizer_to_sentencepiece(tokenizer_name)
+            
         # If the error pertains to the tokenizer class not existing or not
         # currently being imported, suggest using the --trust-remote-code flag.
-        if (not trust_remote_code and
+        elif (not trust_remote_code and
             ("does not exist or is not currently imported." in str(e)
              or "requires you to execute the tokenizer file" in str(e))):
             err_msg = (
@@ -117,7 +156,7 @@ def get_tokenizer(
                 tokenizer_name,
                 *args,
                 trust_remote_code=trust_remote_code,
-                revision=revision,
+                tokenizer_revision=tokenizer_revision,
                 **kwargs)
         else:
             raise e
@@ -140,8 +179,9 @@ def get_lora_tokenizer(lora_request: LoRARequest, *args,
         # No tokenizer was found in the LoRA folder,
         # use base model tokenizer
         logger.warning(
-            "No tokenizer found in %s, using base model tokenizer instead. "
-            "(Exception: %s)", lora_request.lora_local_path, e)
+            f"No tokenizer found in {lora_request.lora_local_path}, "
+            "using base model tokenizer instead. "
+            f"(Exception: {str(e)})")
         tokenizer = None
     return tokenizer
 
