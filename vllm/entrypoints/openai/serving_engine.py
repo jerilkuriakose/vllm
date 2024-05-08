@@ -2,7 +2,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from http import HTTPStatus
-from typing import Any, Awaitable, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import Field
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -22,7 +22,7 @@ logger = init_logger(__name__)
 
 
 @dataclass
-class LoRAModulePath:
+class LoRA:
     name: str
     local_path: str
 
@@ -32,8 +32,7 @@ class OpenAIServing:
     def __init__(self,
                  engine: AsyncLLMEngine,
                  served_model_names: List[str],
-                 lora_modules: Optional[List[LoRAModulePath]],
-                 await_post_init: Optional[Awaitable[Any]] = None):
+                 lora_modules=Optional[List[LoRA]]):
         self.engine = engine
         self.served_model_names = served_model_names
         if lora_modules is None:
@@ -59,12 +58,12 @@ class OpenAIServing:
         if event_loop is not None and event_loop.is_running():
             # If the current is instanced by Ray Serve,
             # there is already a running event loop
-            event_loop.create_task(self._post_init(await_post_init))
+            event_loop.create_task(self._post_init())
         else:
             # When using single vLLM without engine_use_ray
-            asyncio.run(self._post_init(await_post_init))
+            asyncio.run(self._post_init())
 
-    async def _post_init(self, await_post_init):
+    async def _post_init(self):
         engine_model_config = await self.engine.get_model_config()
         self.max_model_len = engine_model_config.max_model_len
 
@@ -75,9 +74,6 @@ class OpenAIServing:
             tokenizer_revision=engine_model_config.tokenizer_revision,
             trust_remote_code=engine_model_config.trust_remote_code,
             truncation_side="left")
-
-        if await_post_init is not None:
-            await await_post_init
 
     async def show_available_models(self) -> ModelList:
         """Show available models. Right now we only have one model."""
@@ -162,9 +158,7 @@ class OpenAIServing:
         })
         return json_str
 
-    async def _check_model(
-        self, request: Union[CompletionRequest, ChatCompletionRequest]
-    ) -> Optional[ErrorResponse]:
+    async def _check_model(self, request) -> Optional[ErrorResponse]:
         if request.model in self.served_model_names:
             return None
         if request.model in [lora.lora_name for lora in self.lora_requests]:
@@ -174,16 +168,14 @@ class OpenAIServing:
             err_type="NotFoundError",
             status_code=HTTPStatus.NOT_FOUND)
 
-    def _maybe_get_lora(
-        self, request: Union[CompletionRequest, ChatCompletionRequest]
-    ) -> Optional[LoRARequest]:
+    def _maybe_get_lora(self, request) -> Optional[LoRARequest]:
         if request.model in self.served_model_names:
             return None
         for lora in self.lora_requests:
             if request.model == lora.lora_name:
                 return lora
         # if _check_model has been called earlier, this will be unreachable
-        raise ValueError(f"The model `{request.model}` does not exist.")
+        raise ValueError("The model `{request.model}` does not exist.")
 
     def _validate_prompt_and_tokenize(
         self,
@@ -203,7 +195,14 @@ class OpenAIServing:
                 "truncation": True,
                 "max_length": truncate_prompt_tokens,
             }
-            input_ids = self.tokenizer(prompt, **tokenizer_kwargs).input_ids
+            try:
+                print('tokenizer_kwargs', tokenizer_kwargs)
+                input_ids = self.tokenizer(prompt, **tokenizer_kwargs).input_ids
+            except Exception as e:
+                if "CachedSentencePieceProcessor" in str(e):
+                    input_ids = self.tokenizer.encode_as_ids(prompt)
+                else:
+                    raise e
         elif truncate_prompt_tokens is not None:
             input_ids = prompt_ids[-truncate_prompt_tokens:]
         else:
