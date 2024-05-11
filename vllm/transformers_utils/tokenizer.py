@@ -43,9 +43,11 @@ def hf_tokenizer_to_sentencepiece(tokenizer_name):
         "all_special_tokens": tokenizer_hf.all_special_tokens,
         "eos_token_id": tokenizer_hf.eos_token_id,
         "is_fast": tokenizer_hf.is_fast,
+        "chat_template": tokenizer_hf.chat_template,        
+        "apply_chat_template": tokenizer_hf.apply_chat_template,
         "convert_ids_to_tokens": tokenizer_hf.convert_ids_to_tokens,
         "get_added_vocab": tokenizer_hf.get_added_vocab,
-        "convert_tokens_to_string": tokenizer_hf.convert_tokens_to_string
+        "convert_tokens_to_string": tokenizer_hf.convert_tokens_to_string,
     })
     return tokenizer
 
